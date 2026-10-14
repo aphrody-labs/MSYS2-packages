@@ -1,7 +1,7 @@
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, symlinkSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
-type Source = { name: string; path: string; origin: string; upstream: string };
+type Source = { name: string; path: string; kind?: "external"; origin: string; upstream: string };
 type Manifest = {
   schema: number;
   dashboard: string;
@@ -9,15 +9,22 @@ type Manifest = {
   optimizedRepositories: { documentation: string; architectures: string[]; policy: string };
   gaming: { documentation: string; proton: string; wine: string; ntsync: boolean; components: string[] };
   kernel: { documentation: string; default: string; compiler: string; profile: string; tickRateHz: number; schedulers: string[]; variants: string[]; modules: string[] };
+  omarchy: { repository: string; packages: string; channels: string[]; architectures: string[]; recipeRoot: string };
   sources: Source[];
 };
 
 const args = process.argv.slice(2);
 let rootOverride: string | undefined;
+let manifestOverride: string | undefined;
 const rootIndex = args.indexOf("--root");
 if (rootIndex >= 0) {
   rootOverride = args[rootIndex + 1];
   args.splice(rootIndex, 2);
+}
+const manifestIndex = args.indexOf("--manifest");
+if (manifestIndex >= 0) {
+  manifestOverride = args[manifestIndex + 1];
+  args.splice(manifestIndex, 2);
 }
 const json = args.includes("--json");
 const command = args.find(arg => !arg.startsWith("--")) ?? "doctor";
@@ -48,6 +55,7 @@ function engineRoot(root: string): string {
 }
 
 function manifest(root: string): Manifest {
+  if (manifestOverride) return JSON.parse(readFileSync(resolve(manifestOverride), "utf8"));
   const installed = join(root, "usr", "share", "cachyos-msys2", "sources.json");
   const source = join(root, "usr", "src", "msys2-packages", "cachyos-msys2", "sources.json");
   return JSON.parse(readFileSync(existsSync(installed) ? installed : source, "utf8"));
@@ -68,6 +76,7 @@ function linkSources(root: string, data: Manifest): void {
   const targetRoot = join(root, "usr", "src", "cachyos");
   mkdirSync(targetRoot, { recursive: true });
   for (const source of data.sources) {
+    if (source.kind === "external") continue;
     const target = join(engine, ...source.path.split("/"));
     const link = join(targetRoot, source.name);
     if (!existsSync(target)) throw new Error(`source absente: ${target}`);
@@ -84,6 +93,11 @@ function syncSources(root: string, data: Manifest): void {
   linkSources(root, data);
   for (const source of data.sources) {
     const repo = join(base, source.name);
+    if (!existsSync(repo)) {
+      if (source.kind !== "external") throw new Error(`source liée absente: ${repo}`);
+      const gitExe = Bun.which("git.exe") ?? Bun.which("git") ?? join(root, "usr", "bin", "git.exe");
+      run([gitExe, "clone", "--filter=blob:none", source.origin, repo]);
+    }
     git(root, repo, ["remote", "set-url", "origin", source.origin]);
     const gitExe = Bun.which("git.exe") ?? Bun.which("git") ?? join(root, "usr", "bin", "git.exe");
     const remotes = Bun.spawnSync([gitExe, "-C", repo, "remote"], { stdout: "pipe" });
@@ -129,7 +143,11 @@ function doctor(root: string, data: Manifest): void {
     repoAdd: existsSync(join(root, "usr", "bin", "repo-add")),
     dashboard: data.dashboard,
     engine,
-    sources: data.sources.map(source => ({ name: source.name, linked: existsSync(join(root, "usr", "src", "cachyos", source.name)), available: !!engine && existsSync(join(engine, ...source.path.split("/"))) })),
+    sources: data.sources.map(source => {
+      const linked = existsSync(join(root, "usr", "src", "cachyos", source.name));
+      const available = source.kind === "external" ? linked : !!engine && existsSync(join(engine, ...source.path.split("/")));
+      return { name: source.name, linked, available };
+    }),
   };
   if (json) console.log(JSON.stringify(status, null, 2));
   else console.log(status);
@@ -157,6 +175,7 @@ async function main(): Promise<void> {
     case "repos": console.log(JSON.stringify(data.optimizedRepositories, null, 2)); break;
     case "gaming": console.log(JSON.stringify(data.gaming, null, 2)); break;
     case "kernel": console.log(JSON.stringify(data.kernel, null, 2)); break;
+    case "omarchy": console.log(JSON.stringify(data.omarchy, null, 2)); break;
     default: throw new Error(`commande inconnue: ${command}`);
   }
 }

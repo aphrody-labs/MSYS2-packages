@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "dashboard": "https://dashboard.cachyos.org/",
+  "mirrors": "https://dashboard.cachyos.org/mirrors",
+  "optimizedRepositories": {
+    "documentation": "https://wiki.cachyos.org/features/optimized_repos/",
+    "architectures": ["x86-64-v3", "x86-64-v4", "znver4"],
+    "policy": "metadata-only-on-msys2"
+  },
+  "gaming": {
+    "documentation": "https://wiki.cachyos.org/configuration/gaming/",
+    "proton": "proton-cachyos-slr",
+    "wine": "wine-cachyos-opt",
+    "ntsync": true,
+    "components": ["dxvk", "vkd3d-proton", "umu-launcher", "gamescope"]
+  },
+  "kernel": {
+    "documentation": "https://wiki.cachyos.org/features/kernel/",
+    "default": "linux-cachyos",
+    "compiler": "clang-thinlto",
+    "profile": "autofdo",
+    "tickRateHz": 1000,
+    "schedulers": ["BORE", "EEVDF", "BMQ"],
+    "variants": ["default", "bore", "bmq", "deckify", "eevdf", "lts", "hardened", "rc", "server", "rt-bore"],
+    "modules": ["nvidia-open", "zfs"]
+  },
+  "sources": [
+    { "name": "linux", "path": "src/kernel/linux", "origin": "https://github.com/aphrody-labs/linux-cachyos.git", "upstream": "https://github.com/CachyOS/linux-cachyos.git" },
+    { "name": "kernel-patches", "path": "src/kernel/patches", "origin": "https://github.com/aphrody-labs/kernel-patches.git", "upstream": "https://github.com/CachyOS/kernel-patches.git" },
+    { "name": "proton", "path": "src/compat/proton", "origin": "https://github.com/aphrody-labs/proton-cachyos.git", "upstream": "https://github.com/CachyOS/proton-cachyos.git" },
+    { "name": "wine", "path": "src/compat/wine", "origin": "https://github.com/aphrody-labs/wine-cachyos.git", "upstream": "https://github.com/CachyOS/wine-cachyos.git" },
+    { "name": "wiki", "path": "docs/vendor/cachyos", "origin": "https://github.com/aphrody-labs/wiki.git", "upstream": "https://github.com/CachyOS/wiki.git" },
+    { "name": "chwd", "path": "src/platform/chwd", "origin": "https://github.com/aphrody-labs/chwd.git", "upstream": "https://github.com/CachyOS/chwd.git" },
+    { "name": "pkg-manage-util", "path": "src/platform/pkg-manage-util", "origin": "https://github.com/aphrody-labs/pkg-manage-util.git", "upstream": "https://github.com/CachyOS/pkg-manage-util.git" },
+    { "name": "open-gpu-kernel-modules", "path": "src/drivers/nvidia-open", "origin": "https://github.com/aphrody-labs/open-gpu-kernel-modules.git", "upstream": "https://github.com/CachyOS/open-gpu-kernel-modules.git" }
+  ]
+}

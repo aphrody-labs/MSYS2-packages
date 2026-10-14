@@ -1,0 +1,4 @@
+/node_modules/
+/*.pkg.tar.zst
+/pkg/
+/src/

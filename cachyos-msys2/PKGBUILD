@@ -1,0 +1,35 @@
+# Maintainer: aphrody-dev <contact@aphrody.com>
+
+pkgname=cachyos-msys2
+pkgver=1.0.0
+pkgrel=4
+pkgdesc='Unified CachyOS source and pacman pipeline for native MSYS2'
+arch=('x86_64')
+url='https://github.com/aphrody-labs/MSYS2-packages/tree/master/cachyos-msys2'
+license=('spdx:MIT')
+depends=('pacman')
+makedepends=()
+options=('!strip')
+backup=('etc/pacman.d/cachyos-msys2.conf')
+install=cachyos-msys2.install
+source=('cym.ts' 'sources.json' 'cachyos-msys2.conf' 'cachyos-msys2.install')
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP')
+
+build() {
+  local bun_exe
+  bun_exe="$(command -v bun.exe || command -v bun)"
+  test -n "${bun_exe}" || return 1
+  "${bun_exe}" build --compile --minify --bytecode \
+    --no-compile-autoload-dotenv --no-compile-autoload-bunfig \
+    "${srcdir}/cym.ts" --outfile "${srcdir}/cym.exe"
+}
+
+check() {
+  "${srcdir}/cym.exe" --root "$(cygpath -w /)" doctor --json
+}
+
+package() {
+  install -Dm755 "${srcdir}/cym.exe" "${pkgdir}/usr/bin/cym.exe"
+  install -Dm644 "${srcdir}/sources.json" "${pkgdir}/usr/share/cachyos-msys2/sources.json"
+  install -Dm644 "${srcdir}/cachyos-msys2.conf" "${pkgdir}/etc/pacman.d/cachyos-msys2.conf"
+}

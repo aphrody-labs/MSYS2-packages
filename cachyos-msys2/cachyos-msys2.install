@@ -1,0 +1,14 @@
+post_install() {
+  /usr/bin/install -d -m755 /var/cache/cachyos-msys2
+  if ! /usr/bin/grep -q '^\[cachyos-msys2\]$' /etc/pacman.conf; then
+    printf '\n[cachyos-msys2]\nInclude = /etc/pacman.d/cachyos-msys2.conf\n' >> /etc/pacman.conf
+  fi
+}
+
+post_upgrade() {
+  post_install
+}
+
+pre_remove() {
+  /usr/bin/sed -i '/^\[cachyos-msys2\]$/,+1d' /etc/pacman.conf
+}

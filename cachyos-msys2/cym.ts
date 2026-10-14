@@ -2,6 +2,7 @@ import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSy
 import { dirname, join, resolve } from "node:path";
 
 type Source = { name: string; path: string; kind?: "external"; origin: string; upstream: string };
+type Builder = { name: string; path: string; command: string[] };
 type Manifest = {
   schema: number;
   dashboard: string;
@@ -10,6 +11,7 @@ type Manifest = {
   gaming: { documentation: string; proton: string; wine: string; ntsync: boolean; components: string[] };
   kernel: { documentation: string; default: string; compiler: string; profile: string; tickRateHz: number; schedulers: string[]; variants: string[]; modules: string[] };
   omarchy: { repository: string; packages: string; channels: string[]; architectures: string[]; recipeRoot: string };
+  pipeline: { layers: string[]; emulators: string[]; builders: Builder[] };
   sources: Source[];
 };
 
@@ -27,7 +29,9 @@ if (manifestIndex >= 0) {
   args.splice(manifestIndex, 2);
 }
 const json = args.includes("--json");
-const command = args.find(arg => !arg.startsWith("--")) ?? "doctor";
+const positionals = args.filter(arg => !arg.startsWith("--"));
+const command = positionals[0] ?? "doctor";
+const action = positionals[1] ?? "validate";
 
 function msysRoot(): string {
   if (rootOverride) return resolve(rootOverride);
@@ -154,6 +158,52 @@ function doctor(root: string, data: Manifest): void {
   if (!status.pacman || !status.makepkg || !status.repoAdd || !engine || status.sources.some(source => !source.available)) process.exitCode = 1;
 }
 
+function pipelineStatus(root: string, data: Manifest) {
+  const engine = engineRoot(root);
+  const sourceRoot = join(root, "usr", "src", "cachyos");
+  const emulatorRoot = join(engine, "plugins", "emulation", "rust");
+  const sourceState = data.sources.map(source => ({ name: source.name, ready: existsSync(join(sourceRoot, source.name)) }));
+  const emulators = data.pipeline.emulators.map(name => ({ name, ready: existsSync(join(emulatorRoot, name, "Cargo.toml")) }));
+  const builders = data.pipeline.builders.map(builder => {
+    const base = builder.name === "bun-engine" || builder.name === "cargo-workspace" ? engine : root;
+    return { ...builder, ready: existsSync(join(base, ...builder.path.split("/"))) };
+  });
+  const omarchyRecipes = join(sourceRoot, "omarchy-pkgs", data.omarchy.recipeRoot);
+  return {
+    layers: data.pipeline.layers,
+    sourceState,
+    emulators,
+    builders,
+    omarchyRecipes: existsSync(omarchyRecipes) ? readdirSync(omarchyRecipes, { withFileTypes: true }).filter(entry => entry.isDirectory()).length : 0,
+  };
+}
+
+function pipeline(root: string, data: Manifest, mode: string): void {
+  linkSources(root, data);
+  const status = pipelineStatus(root, data);
+  if (mode === "plan") {
+    console.log(JSON.stringify(status, null, 2));
+    return;
+  }
+  const missing = [
+    ...status.sourceState.filter(item => !item.ready).map(item => `source:${item.name}`),
+    ...status.emulators.filter(item => !item.ready).map(item => `emulator:${item.name}`),
+    ...status.builders.filter(item => !item.ready).map(item => `builder:${item.name}`),
+  ];
+  if (missing.length > 0) throw new Error(`pipeline incomplète: ${missing.join(", ")}`);
+  if (status.omarchyRecipes === 0) throw new Error("aucune recette Omarchy détectée");
+  if (mode === "build") {
+    const engine = engineRoot(root);
+    const bunExe = Bun.which("bun.exe") ?? Bun.which("bun");
+    if (!bunExe) throw new Error("Bun introuvable");
+    run([bunExe, "run", "./src/cli.ts", "build"], engine);
+    buildPackage(root);
+  } else if (mode !== "validate") {
+    throw new Error(`action pipeline inconnue: ${mode}`);
+  }
+  console.log(JSON.stringify({ status: "ready", action: mode, ...status }, null, 2));
+}
+
 async function dashboard(data: Manifest): Promise<void> {
   const response = await fetch(data.mirrors, { signal: AbortSignal.timeout(8_000) });
   if (!response.ok) throw new Error(`dashboard CachyOS: HTTP ${response.status}`);
@@ -176,6 +226,7 @@ async function main(): Promise<void> {
     case "gaming": console.log(JSON.stringify(data.gaming, null, 2)); break;
     case "kernel": console.log(JSON.stringify(data.kernel, null, 2)); break;
     case "omarchy": console.log(JSON.stringify(data.omarchy, null, 2)); break;
+    case "pipeline": pipeline(root, data, action); break;
     default: throw new Error(`commande inconnue: ${command}`);
   }
 }

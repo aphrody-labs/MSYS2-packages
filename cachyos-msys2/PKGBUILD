@@ -2,7 +2,7 @@
 
 pkgname=cachyos-msys2
 pkgver=1.0.0
-pkgrel=6
+pkgrel=7
 pkgdesc='Unified CachyOS source and pacman pipeline for native MSYS2'
 arch=('x86_64')
 url='https://github.com/aphrody-labs/MSYS2-packages/tree/master/cachyos-msys2'

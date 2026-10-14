@@ -31,6 +31,16 @@
     "architectures": ["x86_64", "aarch64"],
     "recipeRoot": "pkgbuilds"
   },
+  "pipeline": {
+    "layers": ["omarchy", "cachyos", "msys2", "emulation", "builders"],
+    "emulators": ["dust", "gopher64", "jgenesis", "retroboy", "rustboyadvance-ng", "starpsx", "tetanes", "zakuro"],
+    "builders": [
+      { "name": "bun-engine", "path": "package.json", "command": ["bun", "run", "./src/cli.ts", "build"] },
+      { "name": "cargo-workspace", "path": "Cargo.toml", "command": ["bun", "scripts/build/rust/cargo-serial.ts", "--msvc", "test", "--workspace"] },
+      { "name": "msys2-pacman", "path": "usr/src/msys2-packages/cachyos-msys2/PKGBUILD", "command": ["makepkg", "--cleanbuild", "--clean", "--force"] },
+      { "name": "omarchy-packages", "path": "usr/src/cachyos/omarchy-pkgs/bin/build", "command": ["bin/build", "--dry-run"] }
+    ]
+  },
   "sources": [
     { "name": "linux", "path": "src/kernel/linux", "origin": "https://github.com/aphrody-labs/linux-cachyos.git", "upstream": "https://github.com/CachyOS/linux-cachyos.git" },
     { "name": "kernel-patches", "path": "src/kernel/patches", "origin": "https://github.com/aphrody-labs/kernel-patches.git", "upstream": "https://github.com/CachyOS/kernel-patches.git" },
@@ -40,6 +50,7 @@
     { "name": "chwd", "path": "src/platform/chwd", "origin": "https://github.com/aphrody-labs/chwd.git", "upstream": "https://github.com/CachyOS/chwd.git" },
     { "name": "pkg-manage-util", "path": "src/platform/pkg-manage-util", "origin": "https://github.com/aphrody-labs/pkg-manage-util.git", "upstream": "https://github.com/CachyOS/pkg-manage-util.git" },
     { "name": "open-gpu-kernel-modules", "path": "src/drivers/nvidia-open", "origin": "https://github.com/aphrody-labs/open-gpu-kernel-modules.git", "upstream": "https://github.com/CachyOS/open-gpu-kernel-modules.git" },
-    { "name": "omarchy-pkgs", "path": "omarchy-pkgs", "kind": "external", "origin": "https://github.com/omacom/omarchy-pkgs.git", "upstream": "https://github.com/omacom/omarchy-pkgs.git" }
+    { "name": "omarchy-pkgs", "path": "omarchy-pkgs", "kind": "external", "origin": "https://github.com/omacom/omarchy-pkgs.git", "upstream": "https://github.com/omacom/omarchy-pkgs.git" },
+    { "name": "omarchy", "path": "omarchy", "kind": "external", "origin": "https://github.com/omacom/omarchy.git", "upstream": "https://github.com/omacom/omarchy.git" }
   ]
 }

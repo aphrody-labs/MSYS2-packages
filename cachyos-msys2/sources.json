@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "dashboard": "https://dashboard.cachyos.org/",
   "mirrors": "https://dashboard.cachyos.org/mirrors",
   "optimizedRepositories": {
@@ -35,22 +35,96 @@
     "layers": ["omarchy", "cachyos", "msys2", "emulation", "builders"],
     "emulators": ["dust", "gopher64", "jgenesis", "retroboy", "rustboyadvance-ng", "starpsx", "tetanes", "zakuro"],
     "builders": [
-      { "name": "bun-engine", "path": "package.json", "command": ["bun", "run", "./src/cli.ts", "build"] },
-      { "name": "cargo-workspace", "path": "Cargo.toml", "command": ["bun", "scripts/build/rust/cargo-serial.ts", "--msvc", "test", "--workspace"] },
-      { "name": "msys2-pacman", "path": "usr/src/msys2-packages/cachyos-msys2/PKGBUILD", "command": ["makepkg", "--cleanbuild", "--clean", "--force"] },
-      { "name": "omarchy-packages", "path": "usr/src/cachyos/omarchy-pkgs/bin/build", "command": ["bin/build", "--dry-run"] }
-    ]
+      {
+        "name": "bun-engine",
+        "base": "engine",
+        "path": "package.json",
+        "command": ["bun", "run", "build"]
+      },
+      {
+        "name": "cargo-workspace",
+        "base": "workspace",
+        "path": "scripts/cargo.ts",
+        "command": ["bun", "scripts/cargo.ts", "exec", "--", "metadata", "--locked", "--no-deps"]
+      },
+      {
+        "name": "msys2-pacman",
+        "base": "sources",
+        "path": "msys2-packages/cachyos-msys2/PKGBUILD",
+        "command": ["makepkg", "--cleanbuild", "--clean", "--force"]
+      },
+      {
+        "name": "omarchy-packages",
+        "base": "sources",
+        "path": "omarchy-pkgs/bin/build",
+        "command": ["bin/build", "--dry-run"]
+      }
+    ],
+    "emulatorRoot": "crates"
   },
   "sources": [
-    { "name": "linux", "path": "src/kernel/linux", "origin": "https://github.com/aphrody-labs/linux-cachyos.git", "upstream": "https://github.com/CachyOS/linux-cachyos.git" },
-    { "name": "kernel-patches", "path": "src/kernel/patches", "origin": "https://github.com/aphrody-labs/kernel-patches.git", "upstream": "https://github.com/CachyOS/kernel-patches.git" },
-    { "name": "proton", "path": "src/compat/proton", "origin": "https://github.com/aphrody-labs/proton-cachyos.git", "upstream": "https://github.com/CachyOS/proton-cachyos.git" },
-    { "name": "wine", "path": "src/compat/wine", "origin": "https://github.com/aphrody-labs/wine-cachyos.git", "upstream": "https://github.com/CachyOS/wine-cachyos.git" },
-    { "name": "wiki", "path": "docs/vendor/cachyos", "origin": "https://github.com/aphrody-labs/wiki.git", "upstream": "https://github.com/CachyOS/wiki.git" },
-    { "name": "chwd", "path": "src/platform/chwd", "origin": "https://github.com/aphrody-labs/chwd.git", "upstream": "https://github.com/CachyOS/chwd.git" },
-    { "name": "pkg-manage-util", "path": "src/platform/pkg-manage-util", "origin": "https://github.com/aphrody-labs/pkg-manage-util.git", "upstream": "https://github.com/CachyOS/pkg-manage-util.git" },
-    { "name": "open-gpu-kernel-modules", "path": "src/drivers/nvidia-open", "origin": "https://github.com/aphrody-labs/open-gpu-kernel-modules.git", "upstream": "https://github.com/CachyOS/open-gpu-kernel-modules.git" },
-    { "name": "omarchy-pkgs", "path": "omarchy-pkgs", "kind": "external", "origin": "https://github.com/omacom/omarchy-pkgs.git", "upstream": "https://github.com/omacom/omarchy-pkgs.git" },
-    { "name": "omarchy", "path": "omarchy", "kind": "external", "origin": "https://github.com/omacom/omarchy.git", "upstream": "https://github.com/omacom/omarchy.git" }
+    {
+      "name": "linux",
+      "path": "linux-cachyos",
+      "origin": "https://github.com/aphrody-labs/linux-cachyos.git",
+      "upstream": "https://github.com/CachyOS/linux-cachyos.git"
+    },
+    {
+      "name": "kernel-patches",
+      "path": "kernel-patches",
+      "origin": "https://github.com/aphrody-labs/kernel-patches.git",
+      "upstream": "https://github.com/CachyOS/kernel-patches.git"
+    },
+    {
+      "name": "proton",
+      "path": "proton-cachyos",
+      "origin": "https://github.com/aphrody-labs/proton-cachyos.git",
+      "upstream": "https://github.com/CachyOS/proton-cachyos.git"
+    },
+    {
+      "name": "wine",
+      "path": "wine-cachyos",
+      "origin": "https://github.com/aphrody-labs/wine-cachyos.git",
+      "upstream": "https://github.com/CachyOS/wine-cachyos.git"
+    },
+    {
+      "name": "wiki",
+      "path": "wiki",
+      "origin": "https://github.com/aphrody-labs/wiki.git",
+      "upstream": "https://github.com/CachyOS/wiki.git",
+      "sourceId": "cachyos-wiki"
+    },
+    {
+      "name": "chwd",
+      "path": "chwd",
+      "origin": "https://github.com/aphrody-labs/chwd.git",
+      "upstream": "https://github.com/CachyOS/chwd.git"
+    },
+    {
+      "name": "pkg-manage-util",
+      "path": "pkg-manage-util",
+      "origin": "https://github.com/aphrody-labs/pkg-manage-util.git",
+      "upstream": "https://github.com/CachyOS/pkg-manage-util.git"
+    },
+    {
+      "name": "open-gpu-kernel-modules",
+      "path": "open-gpu-kernel-modules",
+      "origin": "https://github.com/aphrody-labs/open-gpu-kernel-modules.git",
+      "upstream": "https://github.com/CachyOS/open-gpu-kernel-modules.git"
+    },
+    {
+      "name": "omarchy-pkgs",
+      "path": "omarchy-pkgs",
+      "kind": "external",
+      "origin": "https://github.com/omacom/omarchy-pkgs.git",
+      "upstream": "https://github.com/omacom/omarchy-pkgs.git"
+    },
+    {
+      "name": "omarchy",
+      "path": "omarchy",
+      "kind": "external",
+      "origin": "https://github.com/omacom/omarchy.git",
+      "upstream": "https://github.com/omacom/omarchy.git"
+    }
   ]
 }

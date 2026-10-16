@@ -2,8 +2,8 @@
 
 pkgname=cachyos-msys2
 pkgver=1.0.0
-pkgrel=7
-pkgdesc='Unified CachyOS source and pacman pipeline for native MSYS2'
+pkgrel=8
+pkgdesc='Bun OS native MSYS2 source and pacman integration'
 arch=('x86_64')
 url='https://github.com/aphrody-labs/MSYS2-packages/tree/master/cachyos-msys2'
 license=('spdx:MIT')
@@ -13,7 +13,7 @@ options=('!strip')
 backup=('etc/pacman.d/cachyos-msys2.conf')
 install=cachyos-msys2.install
 source=('cym.ts' 'sources.json' 'cachyos-msys2.conf' 'cachyos-msys2.install')
-sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP')
+sha256sums=('c069f59d322b7616021d61a4fd2fd7965b0f4e86cc4b5c37b2d9df6babaa58ac' 'bb8e2c2ff2b739ca878c1a2d85c6d030adceead7bd66423196a60aefa3834f97' '20c309f14d2d5ee642a1f280fe45e0dda907c48a2373229b2d20662a4ee49162' 'f4f3ca29d442e0077ceab7e90efa0b67021f3d7ba76c017d23a2be4c8a7178df')
 
 build() {
   local bun_exe
@@ -25,7 +25,8 @@ build() {
 }
 
 check() {
-  "${srcdir}/cym.exe" --root "$(cygpath -w /)" --manifest "$(cygpath -w "${srcdir}/sources.json")" doctor --json
+  # Package compilation does not qualify or mutate a user's source workspace.
+  "${srcdir}/cym.exe" --help
 }
 
 package() {

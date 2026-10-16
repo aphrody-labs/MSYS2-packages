@@ -1,237 +1,463 @@
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, symlinkSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { pathToFileURL } from "node:url";
+import { parseArgs } from "node:util";
 
-type Source = { name: string; path: string; kind?: "external"; origin: string; upstream: string };
-type Builder = { name: string; path: string; command: string[] };
+type Source = { name: string; sourceId?: string; path: string; kind?: "external"; origin: string; upstream: string };
+type Builder = { name: string; base?: "workspace" | "sources" | "engine"; path: string; command: string[] };
 type Manifest = {
   schema: number;
   dashboard: string;
   mirrors: string;
-  optimizedRepositories: { documentation: string; architectures: string[]; policy: string };
-  gaming: { documentation: string; proton: string; wine: string; ntsync: boolean; components: string[] };
-  kernel: { documentation: string; default: string; compiler: string; profile: string; tickRateHz: number; schedulers: string[]; variants: string[]; modules: string[] };
-  omarchy: { repository: string; packages: string; channels: string[]; architectures: string[]; recipeRoot: string };
-  pipeline: { layers: string[]; emulators: string[]; builders: Builder[] };
+  optimizedRepositories: Record<string, unknown>;
+  gaming: Record<string, unknown>;
+  kernel: Record<string, unknown>;
+  omarchy: { recipeRoot: string; [key: string]: unknown };
+  pipeline: { layers: string[]; emulators: string[]; emulatorRoot: string; builders: Builder[] };
   sources: Source[];
 };
-
-const args = process.argv.slice(2);
-let rootOverride: string | undefined;
-let manifestOverride: string | undefined;
-const rootIndex = args.indexOf("--root");
-if (rootIndex >= 0) {
-  rootOverride = args[rootIndex + 1];
-  args.splice(rootIndex, 2);
+export interface CymContext {
+  installationRoot: string;
+  sourceRoot: string;
+  workspace: string;
+  engineRoot?: string;
+  manifestPath: string;
 }
-const manifestIndex = args.indexOf("--manifest");
-if (manifestIndex >= 0) {
-  manifestOverride = args[manifestIndex + 1];
-  args.splice(manifestIndex, 2);
+interface DesktopOptions {
+  root: string;
+  sourceRoot: string;
+  installationRoot: string;
 }
-const json = args.includes("--json");
-const positionals = args.filter(arg => !arg.startsWith("--"));
-const command = positionals[0] ?? "doctor";
-const action = positionals[1] ?? "validate";
-
-function msysRoot(): string {
-  if (rootOverride) return resolve(rootOverride);
-  if (process.env.MSYS2_ROOT) return resolve(process.env.MSYS2_ROOT);
-  const exeRoot = resolve(dirname(process.execPath), "..", "..");
-  if (existsSync(join(exeRoot, "etc", "pacman.conf"))) return exeRoot;
-  let cursor = resolve(process.cwd());
-  while (dirname(cursor) !== cursor) {
-    if (existsSync(join(cursor, "etc", "pacman.conf"))) return cursor;
-    cursor = dirname(cursor);
-  }
-  throw new Error("MSYS2 introuvable; utilisez --root ou MSYS2_ROOT");
+interface WorkspaceOwner {
+  runProcess(
+    argv: string[],
+    cwd: string,
+    options: { timeoutMs: number; maxOutputBytes: number; stdout?: "inherit"; stderr?: "inherit"; stdin?: "inherit" },
+  ): Promise<{ code: number; stdout: string; stderr: string }>;
 }
-
-function engineRoot(root: string): string {
-  if (process.env.BUN_ENGINE_ROOT) return resolve(process.env.BUN_ENGINE_ROOT);
-  const home = join(root, "home");
-  if (existsSync(home)) {
-    for (const user of readdirSync(home)) {
-      const candidate = join(home, user, "projects", "bun-engine");
-      if (existsSync(join(candidate, ".gitmodules"))) return candidate;
-    }
-  }
-  throw new Error("bun-engine introuvable; utilisez BUN_ENGINE_ROOT");
+interface DesktopOwner {
+  planMsys2Desktop(options: DesktopOptions): Promise<Record<string, unknown>>;
+  doctorMsys2Desktop(options: DesktopOptions): Promise<Record<string, unknown>>;
 }
-
-function manifest(root: string): Manifest {
-  if (manifestOverride) return JSON.parse(readFileSync(resolve(manifestOverride), "utf8"));
-  const installed = join(root, "usr", "share", "cachyos-msys2", "sources.json");
-  const source = join(root, "usr", "src", "msys2-packages", "cachyos-msys2", "sources.json");
-  return JSON.parse(readFileSync(existsSync(installed) ? installed : source, "utf8"));
+const help = `cym — native MSYS2 source/package integration for Bun OS
+  doctor | link | sync | build | publish | dashboard | repos | gaming | kernel | omarchy
+  pipeline plan|validate|build
+  --root INSTALLED_MSYS2 --source-root VENDOR --workspace BUN_OS_ROOT
+  [--engine-root EXTERNAL_ENGINE] [--manifest FILE] [--json]
+Environment: APHRODY_MSYS2_ROOT, APHRODY_MSYS2_SOURCE_ROOT,
+             APHRODY_WORKSPACE_ROOT, BUN_ENGINE_ROOT
+doctor, link and pipeline plan/validate are read-only. link validates the flat
+registry; no duplicate checkout/junction is created. sync fetches existing
+registered repositories only. Build/publish require explicit commands.
+`;
+function object(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
-
-function run(argv: string[], cwd?: string): void {
-  const result = Bun.spawnSync(argv, { cwd, stdout: "inherit", stderr: "inherit", stdin: "inherit" });
-  if (result.exitCode !== 0) throw new Error(`${argv[0]} a échoué (${result.exitCode})`);
+function contained(root: string, path: string) {
+  const local = relative(root, path);
+  return local === "" || (!isAbsolute(local) && local !== ".." && !local.startsWith(`..${sep}`));
 }
-
-function git(root: string, repo: string, argv: string[]): void {
-  const gitExe = Bun.which("git.exe") ?? Bun.which("git") ?? join(root, "usr", "bin", "git.exe");
-  run([gitExe, "-C", repo, ...argv]);
+function selected(value: string | undefined, label: string) {
+  if (!value?.trim()) throw new Error(`Configure ${label} explicitly.`);
+  return resolve(value);
 }
-
-function linkSources(root: string, data: Manifest): void {
-  const engine = engineRoot(root);
-  const targetRoot = join(root, "usr", "src", "cachyos");
-  mkdirSync(targetRoot, { recursive: true });
-  for (const source of data.sources) {
-    if (source.kind === "external") continue;
-    const target = join(engine, ...source.path.split("/"));
-    const link = join(targetRoot, source.name);
-    if (!existsSync(target)) throw new Error(`source absente: ${target}`);
-    if (existsSync(link)) {
-      if (!lstatSync(link).isSymbolicLink()) throw new Error(`conflit non-lien: ${link}`);
-      continue;
-    }
-    symlinkSync(target, link, "junction");
-  }
-}
-
-function syncSources(root: string, data: Manifest): void {
-  const base = join(root, "usr", "src", "cachyos");
-  linkSources(root, data);
-  for (const source of data.sources) {
-    const repo = join(base, source.name);
-    if (!existsSync(repo)) {
-      if (source.kind !== "external") throw new Error(`source liée absente: ${repo}`);
-      const gitExe = Bun.which("git.exe") ?? Bun.which("git") ?? join(root, "usr", "bin", "git.exe");
-      run([gitExe, "clone", "--filter=blob:none", source.origin, repo]);
-    }
-    git(root, repo, ["remote", "set-url", "origin", source.origin]);
-    const gitExe = Bun.which("git.exe") ?? Bun.which("git") ?? join(root, "usr", "bin", "git.exe");
-    const remotes = Bun.spawnSync([gitExe, "-C", repo, "remote"], { stdout: "pipe" });
-    const names = remotes.stdout.toString().split(/\s+/);
-    if (names.includes("upstream")) git(root, repo, ["remote", "set-url", "upstream", source.upstream]);
-    else git(root, repo, ["remote", "add", "upstream", source.upstream]);
-    git(root, repo, ["fetch", "--prune", "origin"]);
-    git(root, repo, ["fetch", "--prune", "upstream"]);
-  }
-}
-
-function configurePacman(root: string): void {
-  const conf = join(root, "etc", "pacman.conf");
-  const text = readFileSync(conf, "utf8");
-  if (text.includes("[cachyos-msys2]")) return;
-  throw new Error("dépôt absent de pacman.conf; installez le paquet construit avec pacman -U puis relancez cym publish");
-}
-
-function buildPackage(root: string): void {
-  const bash = join(root, "usr", "bin", "bash.exe");
-  run([bash, "-lc", "cd /usr/src/msys2-packages/cachyos-msys2 && makepkg --cleanbuild --clean --force"]);
-}
-
-function publish(root: string): void {
-  buildPackage(root);
-  const dir = join(root, "usr", "src", "msys2-packages", "cachyos-msys2");
-  const packages = readdirSync(dir).filter(name => name.endsWith(".pkg.tar.zst")).map(name => join(dir, name));
-  if (packages.length === 0) throw new Error("aucun paquet produit");
-  const repo = join(root, "var", "cache", "cachyos-msys2");
-  mkdirSync(repo, { recursive: true });
-  for (const pkg of packages) copyFileSync(pkg, join(repo, pkg.split(/[\\/]/).at(-1)!));
-  const packageArgs = packages.map(pkg => `/var/cache/cachyos-msys2/${pkg.split(/[\\/]/).at(-1)!}`).join(" ");
-  run([join(root, "usr", "bin", "bash.exe"), "-lc", `repo-add /var/cache/cachyos-msys2/cachyos-msys2.db.tar.zst ${packageArgs}`]);
-  configurePacman(root);
-}
-
-function doctor(root: string, data: Manifest): void {
-  const engine = (() => { try { return engineRoot(root); } catch { return null; } })();
-  const status = {
-    root,
-    pacman: existsSync(join(root, "usr", "bin", "pacman.exe")),
-    makepkg: existsSync(join(root, "usr", "bin", "makepkg")),
-    repoAdd: existsSync(join(root, "usr", "bin", "repo-add")),
-    dashboard: data.dashboard,
-    engine,
-    sources: data.sources.map(source => {
-      const linked = existsSync(join(root, "usr", "src", "cachyos", source.name));
-      const available = source.kind === "external" ? linked : !!engine && existsSync(join(engine, ...source.path.split("/")));
-      return { name: source.name, linked, available };
-    }),
+export function resolveCymContext(options: {
+  root?: string;
+  sourceRoot?: string;
+  workspace?: string;
+  engineRoot?: string;
+  manifest?: string;
+}): CymContext {
+  const workspace = selected(options.workspace ?? Bun.env.APHRODY_WORKSPACE_ROOT, "--workspace/APHRODY_WORKSPACE_ROOT");
+  const pacman = Bun.which("pacman.exe") ?? Bun.which("pacman");
+  const executableRoot = resolve(dirname(process.execPath), "../..");
+  const installedRoot = existsSync(join(executableRoot, "etc/pacman.conf")) ? executableRoot : undefined;
+  const installationRoot = selected(
+    options.root ??
+      Bun.env.APHRODY_MSYS2_ROOT ??
+      Bun.env.MSYS2_ROOT ??
+      (pacman ? resolve(dirname(pacman), "../..") : installedRoot),
+    "--root/APHRODY_MSYS2_ROOT",
+  );
+  const sourceRoot = resolve(workspace, options.sourceRoot ?? Bun.env.APHRODY_MSYS2_SOURCE_ROOT ?? "vendor");
+  const engine = options.engineRoot ?? Bun.env.BUN_ENGINE_ROOT;
+  return {
+    workspace,
+    installationRoot,
+    sourceRoot,
+    ...(engine ? { engineRoot: resolve(engine) } : {}),
+    manifestPath: resolve(options.manifest ?? join(sourceRoot, "msys2-packages/cachyos-msys2/sources.json")),
   };
-  if (json) console.log(JSON.stringify(status, null, 2));
-  else console.log(status);
-  if (!status.pacman || !status.makepkg || !status.repoAdd || !engine || status.sources.some(source => !source.available)) process.exitCode = 1;
 }
-
-function pipelineStatus(root: string, data: Manifest) {
-  const engine = engineRoot(root);
-  const sourceRoot = join(root, "usr", "src", "cachyos");
-  const emulatorRoot = join(engine, "plugins", "emulation", "rust");
-  const sourceState = data.sources.map(source => ({ name: source.name, ready: existsSync(join(sourceRoot, source.name)) }));
-  const emulators = data.pipeline.emulators.map(name => ({ name, ready: existsSync(join(emulatorRoot, name, "Cargo.toml")) }));
-  const builders = data.pipeline.builders.map(builder => {
-    const base = builder.name === "bun-engine" || builder.name === "cargo-workspace" ? engine : root;
-    return { ...builder, ready: existsSync(join(base, ...builder.path.split("/"))) };
+export async function loadCymManifest(context: CymContext): Promise<Manifest> {
+  const value: unknown = await Bun.file(context.manifestPath).json();
+  if (
+    !object(value) ||
+    value.schema !== 2 ||
+    !Array.isArray(value.sources) ||
+    !object(value.pipeline) ||
+    !Array.isArray(value.pipeline.builders) ||
+    !Array.isArray(value.pipeline.emulators) ||
+    typeof value.pipeline.emulatorRoot !== "string" ||
+    !Array.isArray(value.pipeline.layers) ||
+    !object(value.omarchy) ||
+    typeof value.omarchy.recipeRoot !== "string" ||
+    typeof value.dashboard !== "string" ||
+    typeof value.mirrors !== "string" ||
+    !object(value.optimizedRepositories) ||
+    !object(value.gaming) ||
+    !object(value.kernel)
+  )
+    throw new Error("Unsupported cym manifest schema.");
+  if (
+    value.sources.some(
+      source =>
+        !object(source) ||
+        typeof source.name !== "string" ||
+        typeof source.path !== "string" ||
+        typeof source.origin !== "string" ||
+        typeof source.upstream !== "string" ||
+        (source.sourceId !== undefined && typeof source.sourceId !== "string"),
+    ) ||
+    value.pipeline.builders.some(
+      builder =>
+        !object(builder) ||
+        typeof builder.name !== "string" ||
+        typeof builder.path !== "string" ||
+        !Array.isArray(builder.command) ||
+        builder.command.some(arg => typeof arg !== "string") ||
+        !["workspace", "sources", "engine"].includes(String(builder.base)),
+    ) ||
+    value.pipeline.emulators.some(name => typeof name !== "string") ||
+    value.pipeline.layers.some(name => typeof name !== "string")
+  )
+    throw new Error("Invalid cym source/builder contract.");
+  return value as Manifest;
+}
+async function owners(context: CymContext) {
+  const processPath = join(context.workspace, "packages/bun-workspace/src/process.ts");
+  const desktopPath = join(context.workspace, "factory/msys2/index.ts");
+  if (!existsSync(processPath) || !existsSync(desktopPath))
+    throw new Error("Selected workspace lacks the canonical Bun OS process/Desktop owners.");
+  const processes: WorkspaceOwner = await import(pathToFileURL(processPath).href);
+  const desktop: DesktopOwner = await import(pathToFileURL(desktopPath).href);
+  if (
+    typeof processes.runProcess !== "function" ||
+    typeof desktop.planMsys2Desktop !== "function" ||
+    typeof desktop.doctorMsys2Desktop !== "function"
+  )
+    throw new Error("Selected workspace owner API is incompatible.");
+  return { processes, desktop };
+}
+async function run(context: CymContext, argv: string[], cwd: string, timeoutMs = 120_000, capture = false) {
+  const { processes } = await owners(context);
+  const result = await processes.runProcess(argv, cwd, {
+    timeoutMs,
+    maxOutputBytes: 8 * 1024 * 1024,
+    ...(capture ? {} : { stdout: "inherit", stderr: "inherit", stdin: "inherit" }),
   });
-  const omarchyRecipes = join(sourceRoot, "omarchy-pkgs", data.omarchy.recipeRoot);
+  if (result.code !== 0) throw new Error(`${basename(argv[0]!)} failed (${result.code}).`);
+  return result;
+}
+function gitExecutable(context: CymContext) {
+  return Bun.which("git.exe") ?? Bun.which("git") ?? join(context.installationRoot, "usr/bin/git.exe");
+}
+export async function cymSourceState(context: CymContext, data: Manifest) {
+  const registry: unknown = await Bun.file(join(context.sourceRoot, "sources.json")).json();
+  if (!object(registry) || !object(registry.sources)) throw new Error("Missing canonical vendor source registry.");
+  const registered = registry.sources;
+  return data.sources.map(source => {
+    const entry = registered[source.sourceId ?? source.name];
+    const declared = object(entry) && typeof entry.path === "string" ? entry.path : null;
+    const path = declared ? resolve(context.sourceRoot, declared) : null;
+    if (path && !contained(context.sourceRoot, path))
+      throw new Error(`Source must resolve under vendor: ${source.name}`);
+    return {
+      name: source.name,
+      sourceId: source.sourceId ?? source.name,
+      path,
+      available: Boolean(path && existsSync(join(path, ".git"))),
+      declaredPathMatches: Boolean(declared && resolve(context.sourceRoot, source.path) === path),
+    };
+  });
+}
+async function syncSources(context: CymContext, data: Manifest) {
+  const sources = await cymSourceState(context, data);
+  for (const source of sources) {
+    if (!source.available || !source.path || !source.declaredPathMatches)
+      throw new Error(`Source is missing or differs from its registered owner: ${source.name}`);
+    const remotes = await run(
+      context,
+      [gitExecutable(context), "-c", "core.fsmonitor=false", "-C", source.path, "remote"],
+      context.workspace,
+      15_000,
+      true,
+    );
+    const names = remotes.stdout.trim().split(/\s+/);
+    for (const name of ["origin", "upstream"])
+      if (names.includes(name))
+        await run(
+          context,
+          [gitExecutable(context), "-c", "core.fsmonitor=false", "-C", source.path, "fetch", "--prune", name],
+          context.workspace,
+          120_000,
+        );
+  }
+}
+async function buildPackage(context: CymContext) {
+  const packageRoot = join(context.sourceRoot, "msys2-packages/cachyos-msys2");
+  if (!existsSync(join(packageRoot, "PKGBUILD"))) throw new Error("Canonical cym PKGBUILD is missing.");
+  const path = await run(
+    context,
+    [join(context.installationRoot, "usr/bin/cygpath.exe"), "-u", packageRoot],
+    context.workspace,
+    15_000,
+    true,
+  );
+  await run(
+    context,
+    [
+      join(context.installationRoot, "usr/bin/bash.exe"),
+      "--noprofile",
+      "--norc",
+      "-c",
+      'cd -- "$1" && exec makepkg --cleanbuild --clean --force',
+      "cym",
+      path.stdout.trim(),
+    ],
+    packageRoot,
+    180_000,
+  );
+}
+async function publish(context: CymContext) {
+  await buildPackage(context);
+  const packageRoot = join(context.sourceRoot, "msys2-packages/cachyos-msys2");
+  const packages = readdirSync(packageRoot).filter(name => name.endsWith(".pkg.tar.zst"));
+  if (!packages.length) throw new Error("No package was produced.");
+  const repo = join(context.installationRoot, "var/cache/cachyos-msys2");
+  mkdirSync(repo, { recursive: true });
+  for (const name of packages) await Bun.write(join(repo, name), Bun.file(join(packageRoot, name)));
+  const paths = await Promise.all(
+    packages.map(name =>
+      run(
+        context,
+        [join(context.installationRoot, "usr/bin/cygpath.exe"), "-u", join(repo, name)],
+        context.workspace,
+        15_000,
+        true,
+      ),
+    ),
+  );
+  const db = await run(
+    context,
+    [join(context.installationRoot, "usr/bin/cygpath.exe"), "-u", join(repo, "cachyos-msys2.db.tar.zst")],
+    context.workspace,
+    15_000,
+    true,
+  );
+  await run(
+    context,
+    [
+      join(context.installationRoot, "usr/bin/bash.exe"),
+      "--noprofile",
+      "--norc",
+      "-c",
+      'exec repo-add "$@"',
+      "cym",
+      db.stdout.trim(),
+      ...paths.map(path => path.stdout.trim()),
+    ],
+    repo,
+  );
+  if (!(await Bun.file(join(context.installationRoot, "etc/pacman.conf")).text()).includes("[cachyos-msys2]"))
+    throw new Error("Local repository is not enabled in the selected installation's pacman.conf.");
+}
+async function pipelineStatus(context: CymContext, data: Manifest) {
+  const sourceState = await cymSourceState(context, data);
+  const registry: unknown = await Bun.file(join(context.sourceRoot, "sources.json")).json();
+  const registered = object(registry) && object(registry.sources) ? registry.sources : {};
+  const emulators = data.pipeline.emulators.map(name => {
+    const entry = registered[name];
+    const path = object(entry) && typeof entry.path === "string" ? resolve(context.sourceRoot, entry.path) : null;
+    const externalEnginePath = context.engineRoot
+      ? resolve(context.engineRoot, data.pipeline.emulatorRoot, name)
+      : null;
+    const registeredReady = Boolean(
+      path && contained(context.sourceRoot, path) && existsSync(join(path, "Cargo.toml")),
+    );
+    const engineReady = Boolean(
+      context.engineRoot &&
+      externalEnginePath &&
+      contained(context.engineRoot, externalEnginePath) &&
+      existsSync(join(externalEnginePath, "Cargo.toml")),
+    );
+    return {
+      name,
+      path: registeredReady ? path : engineReady ? externalEnginePath : path,
+      ready: registeredReady || engineReady,
+      owner: registeredReady ? "vendor-registry" : engineReady ? "explicit-engine-workspace" : null,
+      externalEnginePath,
+    };
+  });
+  const builders = data.pipeline.builders.map(builder => {
+    const base =
+      builder.base === "engine"
+        ? context.engineRoot
+        : builder.base === "sources"
+          ? context.sourceRoot
+          : context.workspace;
+    return { ...builder, ready: Boolean(base && existsSync(resolve(base, builder.path))) };
+  });
+  const recipes = join(context.sourceRoot, "omarchy-pkgs", data.omarchy.recipeRoot);
+  const { desktop } = await owners(context);
+  const desktopPlan = await desktop.planMsys2Desktop({
+    root: context.workspace,
+    sourceRoot: context.sourceRoot,
+    installationRoot: context.installationRoot,
+  });
   return {
     layers: data.pipeline.layers,
     sourceState,
     emulators,
     builders,
-    omarchyRecipes: existsSync(omarchyRecipes) ? readdirSync(omarchyRecipes, { withFileTypes: true }).filter(entry => entry.isDirectory()).length : 0,
+    omarchyRecipes: existsSync(recipes)
+      ? readdirSync(recipes, { withFileTypes: true }).filter(entry => entry.isDirectory()).length
+      : 0,
+    desktop: desktopPlan,
+    mutation: false,
+    buildQualified: false,
   };
 }
-
-function pipeline(root: string, data: Manifest, mode: string): void {
-  linkSources(root, data);
-  const status = pipelineStatus(root, data);
-  if (mode === "plan") {
-    console.log(JSON.stringify(status, null, 2));
-    return;
-  }
+async function pipeline(context: CymContext, data: Manifest, mode: string) {
+  if (!["plan", "validate", "build"].includes(mode)) throw new Error(`Unknown pipeline action: ${mode}`);
+  const status = await pipelineStatus(context, data);
+  if (mode === "plan") return status;
   const missing = [
-    ...status.sourceState.filter(item => !item.ready).map(item => `source:${item.name}`),
-    ...status.emulators.filter(item => !item.ready).map(item => `emulator:${item.name}`),
-    ...status.builders.filter(item => !item.ready).map(item => `builder:${item.name}`),
+    ...status.sourceState
+      .filter(source => !source.available || !source.declaredPathMatches)
+      .map(source => `source:${source.name}`),
+    ...status.emulators.filter(emulator => !emulator.ready).map(emulator => `emulator:${emulator.name}`),
+    ...status.builders
+      .filter(builder => !builder.ready && builder.base !== "engine")
+      .map(builder => `builder:${builder.name}`),
   ];
-  if (missing.length > 0) throw new Error(`pipeline incomplète: ${missing.join(", ")}`);
-  if (status.omarchyRecipes === 0) throw new Error("aucune recette Omarchy détectée");
+  if (missing.length) throw new Error(`Incomplete source pipeline: ${missing.join(", ")}`);
+  if (!status.omarchyRecipes) throw new Error("No registered Omarchy recipes found.");
   if (mode === "build") {
-    const engine = engineRoot(root);
-    const bunExe = Bun.which("bun.exe") ?? Bun.which("bun");
-    if (!bunExe) throw new Error("Bun introuvable");
-    run([bunExe, "run", "./src/cli.ts", "build"], engine);
-    buildPackage(root);
-  } else if (mode !== "validate") {
-    throw new Error(`action pipeline inconnue: ${mode}`);
+    const engineBuilder = data.pipeline.builders.find(
+      builder => builder.name === "bun-engine" && builder.base === "engine",
+    );
+    if (!context.engineRoot || !engineBuilder)
+      throw new Error("The external engine build needs --engine-root; no substitute builder is selected.");
+    const enginePackage: unknown = await Bun.file(join(context.engineRoot, "package.json")).json();
+    if (!object(enginePackage) || !object(enginePackage.scripts) || typeof enginePackage.scripts.build !== "string")
+      throw new Error("The selected engine owner has no build script.");
+    const bun = Bun.which("bun.exe") ?? Bun.which("bun");
+    if (!bun) throw new Error("Expose the selected native Bun executable on PATH.");
+    await run(context, [bun, ...engineBuilder.command.slice(1)], context.engineRoot, 180_000);
+    await buildPackage(context);
   }
-  console.log(JSON.stringify({ status: "ready", action: mode, ...status }, null, 2));
+  return { ...status, action: mode, mutation: mode === "build" };
 }
-
-async function dashboard(data: Manifest): Promise<void> {
+async function dashboard(data: Manifest) {
   const response = await fetch(data.mirrors, { signal: AbortSignal.timeout(8_000) });
-  if (!response.ok) throw new Error(`dashboard CachyOS: HTTP ${response.status}`);
+  if (!response.ok) throw new Error(`CachyOS dashboard: HTTP ${response.status}`);
   const html = await response.text();
   const count = (value: string) => html.match(new RegExp(`>${value}<`, "g"))?.length ?? 0;
-  console.log(JSON.stringify({ url: data.dashboard, mirrors: data.mirrors, healthy: count("HEALTHY"), partial: count("PARTIAL"), error: count("ERROR") }, null, 2));
+  return {
+    url: data.dashboard,
+    mirrors: data.mirrors,
+    healthy: count("HEALTHY"),
+    partial: count("PARTIAL"),
+    error: count("ERROR"),
+  };
 }
-
-async function main(): Promise<void> {
-  const root = msysRoot();
-  const data = manifest(root);
-  switch (command) {
-    case "doctor": doctor(root, data); break;
-    case "link": linkSources(root, data); doctor(root, data); break;
-    case "sync": syncSources(root, data); break;
-    case "build": buildPackage(root); break;
-    case "publish": publish(root); break;
-    case "dashboard": await dashboard(data); break;
-    case "repos": console.log(JSON.stringify(data.optimizedRepositories, null, 2)); break;
-    case "gaming": console.log(JSON.stringify(data.gaming, null, 2)); break;
-    case "kernel": console.log(JSON.stringify(data.kernel, null, 2)); break;
-    case "omarchy": console.log(JSON.stringify(data.omarchy, null, 2)); break;
-    case "pipeline": pipeline(root, data, action); break;
-    default: throw new Error(`commande inconnue: ${command}`);
+export async function runCym(argv = Bun.argv.slice(2)) {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    strict: true,
+    options: {
+      help: { type: "boolean", short: "h" },
+      root: { type: "string" },
+      "source-root": { type: "string" },
+      workspace: { type: "string" },
+      "engine-root": { type: "string" },
+      manifest: { type: "string" },
+      json: { type: "boolean" },
+    },
+  });
+  if (values.help) {
+    console.log(help);
+    return;
   }
+  if (positionals.length > 2 || (positionals.length > 1 && positionals[0] !== "pipeline"))
+    throw new Error("Unexpected command arguments.");
+  const context = resolveCymContext({
+    root: values.root,
+    sourceRoot: values["source-root"],
+    workspace: values.workspace,
+    engineRoot: values["engine-root"],
+    manifest: values.manifest,
+  });
+  const data = await loadCymManifest(context);
+  const command = positionals[0] ?? "doctor";
+  let result: unknown;
+  switch (command) {
+    case "doctor": {
+      const { desktop } = await owners(context);
+      const doctor = await desktop.doctorMsys2Desktop({
+        root: context.workspace,
+        sourceRoot: context.sourceRoot,
+        installationRoot: context.installationRoot,
+      });
+      result = doctor;
+      if (doctor.metadataReady !== true) process.exitCode = 1;
+      break;
+    }
+    case "link": {
+      const sources = await cymSourceState(context, data);
+      result = { sources, linksCreated: 0, mutation: false };
+      if (sources.some(source => !source.available || !source.declaredPathMatches)) process.exitCode = 1;
+      break;
+    }
+    case "sync":
+      await syncSources(context, data);
+      result = { fetched: true, clonesCreated: 0 };
+      break;
+    case "build":
+      await buildPackage(context);
+      result = { packageBuilt: true };
+      break;
+    case "publish":
+      await publish(context);
+      result = { published: true };
+      break;
+    case "dashboard":
+      result = await dashboard(data);
+      break;
+    case "repos":
+      result = data.optimizedRepositories;
+      break;
+    case "gaming":
+      result = data.gaming;
+      break;
+    case "kernel":
+      result = data.kernel;
+      break;
+    case "omarchy":
+      result = data.omarchy;
+      break;
+    case "pipeline":
+      result = await pipeline(context, data, positionals[1] ?? "validate");
+      break;
+    default:
+      throw new Error(`Unknown command: ${command}`);
+  }
+  console.log(JSON.stringify(result, null, 2));
 }
-
-main().catch(error => {
-  console.error(error instanceof Error ? error.message : error);
-  process.exitCode = 1;
-});
+if (import.meta.main)
+  runCym().catch(error => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
